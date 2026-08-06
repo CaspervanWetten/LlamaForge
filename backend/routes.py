@@ -33,8 +33,12 @@ VLLM_SUPPORTED = osplat.IS_WIN
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB     = os.path.join(ROOT, "web")
 LOGDIR  = os.path.join(ROOT, "logs")
-BUILDER_LLAMA   = BuildManager(LOGDIR, "build")
-BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama")
+# Each engine records the binary its own build produced (see _record_server_bin).
+# Resolved at call time, so the helper can live further down with its siblings.
+BUILDER_LLAMA   = BuildManager(LOGDIR, "build",
+                               on_built=lambda p: _record_server_bin("server_bin", p))
+BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama",
+                               on_built=lambda p: _record_server_bin("ik_llama_server_bin", p))
 
 def _builder_for(target):
     return BUILDER_IKLLAMA if target == "ikllama" else BUILDER_LLAMA
@@ -929,6 +933,12 @@ def post_build_start(req):
         bdir = c["build_dir"]
         flags = req.body.get("flags") or c.get("cmake_flags") or hardware.recommend()["cmake_flags"]
         config.update({"cmake_flags": flags})
+    # Answer an unset/bad path here rather than starting a build thread that can
+    # only fail: the user gets the reason in the UI instead of a raw cmake error
+    # in the build log ("No build directory specified for -B").
+    bad = BuildManager.validate_paths(src, bdir)
+    if bad:
+        return 200, {"started": False, "target": target, "error": bad}
     ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True))
     return 200, {"started": ok, "target": target}
 
@@ -1152,6 +1162,23 @@ def _active_server_bin(c=None):
     if c.get("active_engine") == "ikllama":
         return c.get("ik_llama_server_bin", "")
     return c.get("server_bin", "")
+
+
+def _record_server_bin(key, path):
+    """Point `key` at the binary a finished build produced. Returns True if
+    config.json changed.
+
+    Only fills a gap or repairs a path that isn't there: bootstrap's pre-build
+    guess (`bin/llama-server`) never exists on MSVC, so it gets corrected, while
+    a path the user set deliberately - and that resolves - is left alone. This
+    runs on a build thread, so it goes through config.update()'s lock rather
+    than load/mutate/save.
+    """
+    current = (cfg().get(key) or "").strip()
+    if current and os.path.exists(current):
+        return False
+    config.update({key: path})
+    return True
 
 
 def post_network(req):

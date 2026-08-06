@@ -142,6 +142,21 @@ def status():
         "platform": osplat.current(),
     }
 
+def _post_install(spec, log):
+    """Make a just-installed tool visible without restarting, and say so plainly
+    when it still isn't.
+
+    The Setup tab kept showing a successfully installed ninja as MISSING: winget
+    updates the registry PATH, but _which() reads the PATH this process
+    inherited at launch. Refresh from the registry, re-probe, and only ask for a
+    restart if that genuinely wasn't enough.
+    """
+    osplat.refresh_path()
+    if _tool_exe(spec):
+        return True, log
+    return True, (log + "\n\nInstalled, but not on this process's PATH yet - "
+                        "restart LlamaForge for it to be detected.")
+
 def install(name):
     """Install one tool by name. Returns (ok, log)."""
     spec = TOOLS.get(name)
@@ -151,8 +166,9 @@ def install(name):
         if not _which("brew"):
             return False, f"Homebrew not found. Install it (https://brew.sh) or manually: {spec['url']}"
         r = subprocess.run(["brew", "install", spec["brew"]], capture_output=True, text=True)
-        return (r.returncode == 0,
-                (r.stdout + r.stderr) or ("installed via brew" if r.returncode == 0 else "brew failed"))
+        if r.returncode == 0:
+            return _post_install(spec, (r.stdout + r.stderr) or "installed via brew")
+        return False, (r.stdout + r.stderr) or "brew failed"
     if osplat.IS_LINUX:
         hint = osplat.linux_install_hint(osplat.linux_pkg_manager(), spec["pkg"])
         return False, (f"Run this in a terminal (the dashboard never runs sudo):\n  {hint}"
@@ -162,7 +178,7 @@ def install(name):
                             "--accept-source-agreements", "--accept-package-agreements"],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            return True, r.stdout or "installed via winget"
+            return _post_install(spec, r.stdout or "installed via winget")
         log = "winget failed:\n" + (r.stdout + r.stderr)
     else:
         log = "winget not available\n"
@@ -170,7 +186,7 @@ def install(name):
         r = subprocess.run(["choco", "install", spec["choco"], "-y"],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            return True, log + "\ninstalled via choco"
+            return _post_install(spec, log + "\ninstalled via choco")
         return False, log + "\nchoco failed:\n" + (r.stdout + r.stderr)
     return False, log + f"\nNo package manager. Install manually: {spec['url']}"
 

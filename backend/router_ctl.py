@@ -98,6 +98,14 @@ def stop(port, timeout=10):
 def start(server_bin, models_ini, port, host, api_key, logdir):
     if not server_bin or not os.path.exists(server_bin):
         return False, "server_bin not found - build llama.cpp first"
+    # Port 8080 is a popular default (XAMPP, Apache, other dev servers). Without
+    # this check we spawned llama-server anyway; it logged "couldn't bind HTTP
+    # server socket" into router.err.log and exited, while start() had already
+    # reported success - so the dashboard showed every model offline with no
+    # hint as to why. Ask before spawning, and name the port in the error.
+    if is_running(port):
+        return False, (f"port {port} is already in use by another process - "
+                       f"stop it, or change the router port in Setup")
     os.makedirs(logdir, exist_ok=True)
     args = [server_bin, "--models-preset", models_ini, "--models-max", "1", "--offline",
             "--host", host, "--port", str(port), "--metrics"]
@@ -107,8 +115,15 @@ def start(server_bin, models_ini, port, host, api_key, logdir):
     err = open(os.path.join(logdir, "router.err.log"), "a", encoding="utf-8", errors="replace")
     kw = ({"creationflags": CREATE_NO_WINDOW} if osplat.IS_WIN
           else {"start_new_session": True})   # detach from the dashboard's session
-    subprocess.Popen(args, stdout=out, stderr=err, stdin=subprocess.DEVNULL,
-                     close_fds=True, **kw)
+    try:
+        subprocess.Popen(args, stdout=out, stderr=err, stdin=subprocess.DEVNULL,
+                         close_fds=True, **kw)
+    finally:
+        # The child holds its own duplicated handles; these are the parent's
+        # copies and nothing reads them here. Leaving them open leaked two
+        # handles per restart for the life of the dashboard.
+        out.close()
+        err.close()
     return True, ""
 
 def restart(server_bin, models_ini, port, host, api_key, logdir):

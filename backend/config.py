@@ -159,8 +159,22 @@ def migrate():
 # apply_ctx_defaults holds this one across many set_keys calls.
 _INI_LOCK = threading.RLock()
 
+def _abs(p):
+    """Anchor a configured path to the repo root.
+
+    The router is spawned detached and is handed this path as an argument, so it
+    resolves any relative value against *its* CWD - whatever directory the user
+    launched the panel from. config.example.json ships "./models.ini", so
+    starting from anywhere but the repo root pointed llama-server at a different,
+    usually nonexistent registry: it came up with 0 models and the dashboard
+    looked like it had lost every model on restart.
+    """
+    if not p:
+        return p
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(ROOT, p))
+
 def ini_path():
-    """The models.ini the active engine reads.
+    """The models.ini the active engine reads, always as an absolute path.
 
     ik_llama gets its own registry because the two binaries accept different
     knobs; when the user has not named one, derive a sibling of the llama.cpp
@@ -170,10 +184,10 @@ def ini_path():
     if c.get("active_engine") == "ikllama":
         p = c.get("ik_llama_models_ini")
         if p:
-            return p
-        stem, ext = os.path.splitext(c["models_ini"])
+            return _abs(p)
+        stem, ext = os.path.splitext(_abs(c["models_ini"]))
         return stem + "-ikllama" + (ext or ".ini")
-    return c["models_ini"]
+    return _abs(c["models_ini"])
 
 def read_sections(path=None):
     """Return {section: {key: value}} for all sections including [*]."""
@@ -399,13 +413,27 @@ def apply_ctx_defaults(path=None):
                 changed.append(sec)
         return {"changed": changed}
 
-def ensure_global(defaults, path=None):
-    """Make sure a [*] global section exists with sane defaults (first run)."""
+def ensure_models_ini(path=None, defaults=None):
+    """Create models.ini with a [*] global section if it isn't there yet.
+
+    llama-server refuses to start without this file, and on a fresh checkout
+    nothing created it: the repo ships no models.ini (it's per-machine), so the
+    very first launch failed with a bind-less router and an empty dashboard.
+    Runs on every startup and is idempotent - an existing file, even one with no
+    [*] section, is left exactly as the user wrote it.
+
+    Returns True if the file was created.
+    """
     path = path or ini_path()
     with _INI_LOCK:
-        secs = read_sections(path)
-        if "*" not in secs:
-            if not os.path.exists(path):
-                with open(path, "w", encoding="utf-8", newline="") as f:
-                    f.write("version = 1\n")
-            _set_keys_locked("*", defaults, path)
+        if os.path.exists(path):
+            return False
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("; LlamaForge model registry - read by llama-server's router.\n"
+                    "; Sections are model ids; keys are llama-server flags.\n"
+                    "version = 1\n")
+        _set_keys_locked("*", defaults or {"ctx-size": CTX_GLOBAL_DEFAULT}, path)
+        return True

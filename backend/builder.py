@@ -9,7 +9,12 @@ UPDATE_TTL      = 900   # seconds a successful upstream check stays cached
 UPDATE_TTL_FAIL = 60    # failed fetches retry sooner, but never per-click
 
 class BuildManager:
-    def __init__(self, log_dir, log_name="build"):
+    def __init__(self, log_dir, log_name="build", on_built=None):
+        # on_built(path) fires once, after a successful build, with the located
+        # llama-server. Injected rather than imported so builder.py stays free of
+        # config.py: one BuildManager exists per engine and only the caller knows
+        # which config key a given instance owns.
+        self.on_built = on_built
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
         self.log_path = os.path.join(log_dir, f"{log_name}.log")
@@ -84,6 +89,48 @@ class BuildManager:
         flat = os.path.join(build_dir, "bin")
         return flat if isdir(flat) else None
 
+    @staticmethod
+    def locate_server_bin(build_dir, isdir=os.path.isdir, isfile=os.path.isfile):
+        """Where this build actually put llama-server, or None.
+
+        bootstrap has to guess this path before anything is built, and it guesses
+        the Ninja/Make layout (bin/llama-server). MSVC's multi-config generator
+        puts it in bin/Release with an .exe suffix instead, so on Windows the
+        guess was always wrong and had to be corrected by hand in config.json
+        after every build. Both names are probed rather than keying off the host
+        OS, so a cross-build or a WSL-built tree resolves the same way.
+        """
+        if not build_dir:
+            return None
+        d = BuildManager.binaries_dir(build_dir, isdir=isdir)
+        if not d:
+            return None
+        for name in ("llama-server.exe", "llama-server"):
+            p = os.path.join(d, name)
+            if isfile(p):
+                return p
+        return None
+
+    @staticmethod
+    def validate_paths(src, build_dir, isdir=os.path.isdir):
+        """Why the build can't run, or "" if it can.
+
+        On a fresh install llama_src/build_dir are deliberately blank, so Rebuild
+        used to run `cmake -B  -S ` and surface CMake's own "No build directory
+        specified for -B" - an error about our bug, phrased as if the user had
+        typed something wrong. Check here and say what's actually missing.
+
+        build_dir is not required to exist: cmake creates it. Only the source
+        tree has to be there already.
+        """
+        if not (src or "").strip():
+            return "llama.cpp source directory is not set - set it in Setup first."
+        if not (build_dir or "").strip():
+            return "Build directory is not set - set it in Setup first."
+        if not isdir(src):
+            return f"llama.cpp source directory does not exist: {src}"
+        return ""
+
     def backup_binaries(self, build_dir):
         src = self.binaries_dir(build_dir)
         if src:
@@ -113,6 +160,9 @@ class BuildManager:
                               started=time.time(), finished=None)
         open(self.log_path, "w").close()  # fresh log
         try:
+            bad = self.validate_paths(src, build_dir)
+            if bad:
+                raise RuntimeError(bad)
             if pull:
                 self.state["phase"] = "pull"
                 self._log("=== git pull (origin) ===")
@@ -143,6 +193,17 @@ class BuildManager:
 
             self.state.update(phase="done", returncode=0)
             self._log("\n=== BUILD OK ===")
+            found = self.locate_server_bin(build_dir)
+            if found:
+                self.state["server_bin"] = found
+                self._log(f"[binaries] llama-server -> {found}")
+                try:
+                    if self.on_built:
+                        self.on_built(found)
+                except Exception as e:
+                    # Recording the path is a convenience; the build itself
+                    # succeeded and must not be reported as failed over this.
+                    self._log(f"[binaries] could not record server_bin: {e}")
         except Exception as e:
             self.state.update(phase="failed", returncode=1)
             self._log(f"\n=== BUILD FAILED: {e} ===")

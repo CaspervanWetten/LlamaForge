@@ -176,3 +176,48 @@ def linux_install_hint(pm, package):
     return {"apt-get": f"sudo apt-get install -y {package}",
             "dnf": f"sudo dnf install -y {package}",
             "pacman": f"sudo pacman -S --noconfirm {package}"}.get(pm, "")
+
+
+def refresh_path():
+    """Re-read the machine PATH so a just-installed tool is visible right away.
+
+    winget/choco write PATH into the registry and broadcast WM_SETTINGCHANGE,
+    but this process inherited its copy of the environment at launch, so
+    shutil.which() kept reporting a freshly installed ninja as MISSING until
+    LlamaForge was restarted. Windows keeps the authoritative value in the
+    registry: read it back and merge it in, keeping anything this process added
+    itself (venv/activate prepends, test shims) ahead of the registry entries.
+
+    POSIX package managers install into directories that are already on PATH, so
+    there is nothing to refresh. Returns True if PATH gained any entries.
+    """
+    if not IS_WIN:
+        return False
+    try:
+        import winreg
+    except ImportError:                      # non-CPython / stripped install
+        return False
+    found = []
+    for hive, sub in ((winreg.HKEY_LOCAL_MACHINE,
+                       r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, sub) as key:
+                raw, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:                      # key or value absent; the other may still work
+            continue
+        found += [os.path.expandvars(p) for p in str(raw).split(os.pathsep) if p.strip()]
+    if not found:
+        return False
+    current_entries = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    seen = {p.lower().rstrip("\\/") for p in current_entries}
+    added = []
+    for p in found:
+        key = p.lower().rstrip("\\/")
+        if key not in seen:
+            seen.add(key)
+            added.append(p)
+    if not added:
+        return False
+    os.environ["PATH"] = os.pathsep.join(current_entries + added)
+    return True
