@@ -157,7 +157,7 @@ class BuildManager:
             if self.state["running"]:
                 return
             self.state.update(running=True, phase="starting", returncode=None,
-                              started=time.time(), finished=None)
+                              started=time.time(), finished=None, warning=None)
         open(self.log_path, "w").close()  # fresh log
         try:
             bad = self.validate_paths(src, build_dir)
@@ -189,27 +189,63 @@ class BuildManager:
             rc = self._stream(["cmake", "--build", build_dir, "--config", "Release",
                                "--parallel", str(jobs)])
             if rc != 0:
-                raise RuntimeError("cmake build failed")
+                # cmake returns one code for the whole build. A non-essential
+                # later target (npm/sharp UI assets) can fail after llama-server
+                # already built - reporting BUILD FAILED then is wrong. But only
+                # a binary from THIS run counts: a stale one from a previous
+                # success would hide a real compile failure, so freshness is
+                # proven by mtime, not assumed from mere presence.
+                fresh = self._fresh_binary(build_dir, self.state.get("started") or 0)
+                if not fresh:
+                    raise RuntimeError("cmake build failed")
+                self.state.update(phase="done_warnings", returncode=0,
+                                  warning="llama-server built, but a later build "
+                                          "step failed - see the log.")
+                self._log("\n=== BUILD OK (with warnings) ===")
+                self._record_built(fresh)
+                return
 
             self.state.update(phase="done", returncode=0)
             self._log("\n=== BUILD OK ===")
             found = self.locate_server_bin(build_dir)
             if found:
-                self.state["server_bin"] = found
-                self._log(f"[binaries] llama-server -> {found}")
-                try:
-                    if self.on_built:
-                        self.on_built(found)
-                except Exception as e:
-                    # Recording the path is a convenience; the build itself
-                    # succeeded and must not be reported as failed over this.
-                    self._log(f"[binaries] could not record server_bin: {e}")
+                self._record_built(found)
         except Exception as e:
             self.state.update(phase="failed", returncode=1)
             self._log(f"\n=== BUILD FAILED: {e} ===")
         finally:
             self.state.update(running=False, finished=time.time())
             self._upd_cache.clear()   # a pull may have moved HEAD; re-check next open
+
+    # Filesystem mtime granularity is coarse (up to ~2s on FAT; truncation can
+    # even put a just-written file's recorded mtime a hair below the wall-clock
+    # time captured moments earlier). A stale binary is from a *previous* build -
+    # minutes or more old - so this tolerance separates "made this run" from
+    # "left over" without ever misreading a genuinely fresh binary as stale.
+    _MTIME_TOLERANCE = 3.0
+
+    def _fresh_binary(self, build_dir, since):
+        """The built llama-server if it exists AND was (re)written by this run,
+        else None. Distinguishes a binary this build produced from a stale one
+        left by a previous successful build."""
+        p = self.locate_server_bin(build_dir)
+        if not p:
+            return None
+        try:
+            return p if os.path.getmtime(p) >= since - self._MTIME_TOLERANCE else None
+        except OSError:
+            return None
+
+    def _record_built(self, found):
+        """Note the built binary in state and hand it to on_built. A raising
+        callback (e.g. read-only config.json) must never fail a good build."""
+        self.state["server_bin"] = found
+        self._log(f"[binaries] llama-server -> {found}")
+        try:
+            if self.on_built:
+                self.on_built(found)
+        except Exception as e:
+            self._log(f"[binaries] could not record server_bin: {e}")
 
     def start(self, src, build_dir, flags, pull=True, jobs=None):
         if self.state["running"]:

@@ -148,6 +148,11 @@ async function pollBuild() {
       msg.className = "msg ok";
       msg.textContent = "build OK" + (s.started&&s.finished?` in ${fmtDur(s.finished-s.started)}`:"");
       clearInterval(buildPoll);
+    } else if (msg && s.phase === "done_warnings") {
+      // llama-server built, but a non-essential later target (UI assets) failed.
+      msg.className = "msg warn";
+      msg.textContent = "built with warnings - " + (s.warning || "see log");
+      clearInterval(buildPoll);
     } else if (msg && s.phase === "failed") {
       msg.className = "msg err"; msg.textContent = "build failed - see log";
       clearInterval(buildPoll);
