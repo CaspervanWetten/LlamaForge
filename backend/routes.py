@@ -854,6 +854,8 @@ def post_model_delete(req):
         ok, err = backend.delete(mid)
     except backends.Unsupported as e:
         raise ApiError(400, str(e))
+    if ok:
+        config.prune_binding(mid)          # a gone model keeps no binding
     return (200 if ok else 500), {"ok": ok, "error": err, "backend": backend.name}
 
 
@@ -895,16 +897,37 @@ def post_autotune_refine(req):
 
 
 def post_presets_save(req):
+    name = req.body.get("name", "")
     try:
-        presets = config.save_preset(req.body.get("name", ""),
-                                     req.body.get("settings", {}))
+        presets = config.save_preset(name, req.body.get("settings", {}))
     except ValueError as e:
         raise ApiError(400, str(e))
+    # Re-sync every model bound to this preset: editing "coding" once updates
+    # all models using it - the point of binding (issue #2).
+    clean = _clean_settings(presets.get(name, {}))
+    for mid in config.bindings_for_preset(name):
+        _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "presets": presets}
 
 
 def post_presets_delete(req):
     return 200, {"ok": config.delete_preset(req.body.get("name", ""))}
+
+
+def post_presets_bind(req):
+    """Bind a preset as a model's default (name="" unbinds). Binding
+    materializes the preset's knobs into the model's section now; unbinding
+    leaves them in place - they're the user's once written."""
+    mid = req.body.get("model", "")
+    name = req.body.get("name", "")
+    try:
+        binds = config.bind_preset(mid, name)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    if name:
+        preset = config.get_presets().get(name, {})
+        _apply_knobs_and_reload(mid, _clean_settings(preset))
+    return 200, {"ok": True, "bindings": binds}
 
 
 def post_presets_apply(req):
@@ -1411,6 +1434,7 @@ POST_ROUTES = {
     "/api/autotune/recommend":  post_autotune_recommend,
     "/api/autotune/refine":     post_autotune_refine,
     "/api/presets/save":        post_presets_save,
+    "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,
     "/api/presets/apply":       post_presets_apply,
     "/api/build/start":         post_build_start,

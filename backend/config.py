@@ -47,6 +47,7 @@ DEFAULTS = {
     "active_engine": "llamacpp",              # which binary the router uses: llamacpp | ikllama
     "auto_load_model": "",                    # model id to load automatically on launch ("" = none)
     "presets":     {},                       # named knob sets: {name: {knob: value}}
+    "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit
     "ui_mode":     "lite",                    # "lite" (curated knobs) or "advanced" (all ~220)
     "onboarded":   False,                     # first-run wizard shown once, then True
     "anthropic_default_model": "",           # fallback local model id for the Anthropic shim
@@ -338,16 +339,72 @@ def save_preset(name, settings):
         return presets
 
 def delete_preset(name):
-    """Remove a named preset. Returns True if it existed."""
+    """Remove a named preset and any model bindings that pointed at it. Returns
+    True if the preset existed."""
     with _LOCK:
         cfg = load()
         presets = cfg.get("presets")
-        if isinstance(presets, dict) and name in presets:
-            del presets[name]
-            cfg["presets"] = presets
+        if not (isinstance(presets, dict) and name in presets):
+            return False
+        del presets[name]
+        cfg["presets"] = presets
+        binds = cfg.get("preset_bindings")
+        if isinstance(binds, dict):
+            cfg["preset_bindings"] = {m: n for m, n in binds.items() if n != name}
+        save(cfg)
+        return True
+
+# ---------------- preset bindings ----------------
+# A binding names the preset a model defaults to. The knobs themselves are
+# materialized into models.ini by the caller (routes) at bind/edit time - config
+# only owns the mapping, because reloading the router is not config's job.
+
+def get_bindings():
+    b = load().get("preset_bindings")
+    return b if isinstance(b, dict) else {}
+
+def bind_preset(model_id, name):
+    """Bind model_id to preset `name` (or unbind when name is ""). Raises if the
+    preset does not exist. Returns the full bindings map."""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        raise ValueError("model id is required")
+    name = (name or "").strip()
+    with _LOCK:
+        cfg = load()
+        binds = cfg.get("preset_bindings")
+        if not isinstance(binds, dict):
+            binds = {}
+        if name == "":
+            binds.pop(model_id, None)
+        else:
+            if name not in (cfg.get("presets") or {}):
+                raise ValueError(f"unknown preset: {name}")
+            binds[model_id] = name
+        cfg["preset_bindings"] = binds
+        save(cfg)
+        return binds
+
+def unbind_preset(model_id):
+    """Remove a model's binding. Returns True if it had one."""
+    with _LOCK:
+        cfg = load()
+        binds = cfg.get("preset_bindings")
+        if isinstance(binds, dict) and model_id in binds:
+            del binds[model_id]
+            cfg["preset_bindings"] = binds
             save(cfg)
             return True
         return False
+
+def prune_binding(model_id):
+    """Drop a deleted model's binding. Alias of unbind_preset for call-site
+    clarity."""
+    return unbind_preset(model_id)
+
+def bindings_for_preset(name):
+    """Model ids bound to preset `name`."""
+    return [m for m, n in get_bindings().items() if n == name]
 
 # ---------------- automatic ctx-size defaults ----------------
 

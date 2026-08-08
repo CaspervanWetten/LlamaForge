@@ -408,7 +408,13 @@ function openClientConfig(id) {
 /* ---------- presets ---------- */
 function presetBar(m) {
   const P = cfgOf().presets || {};
-  const chips = Object.keys(P).map(n => `<span class="pchip" data-preset-apply="${esc(n)}" data-preset-model="${esc(m.id)}" title="apply preset to this model">${esc(n)}<span class="px" data-preset-del="${esc(n)}" title="delete preset">&times;</span></span>`).join("");
+  const bound = (cfgOf().preset_bindings || {})[m.id] || "";
+  const chips = Object.keys(P).map(n => {
+    const isBound = n === bound;
+    return `<span class="pchip${isBound ? " bound" : ""}" data-preset-apply="${esc(n)}" data-preset-model="${esc(m.id)}" title="apply preset to this model">`
+      + `<span class="pbind" data-preset-bind="${esc(n)}" data-preset-bind-model="${esc(m.id)}" title="${isBound ? "bound as default - click to unbind" : "bind as this model's default"}">${isBound ? "◉" : "○"}</span>`
+      + `${esc(n)}<span class="px" data-preset-del="${esc(n)}" title="delete preset">&times;</span></span>`;
+  }).join("");
   return `<div class="presetbar">
     <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">Presets</span>
     ${chips||'<span class="note" style="margin:0">none saved yet</span>'}
@@ -419,6 +425,16 @@ async function applyPreset(model, name) {
   const r = await api("/api/presets/apply", {model, name});
   if (r.ok) { toast(`Applied "${name}"`, "ok"); delete diagCache[model]; invalidateKnobs(); await refresh(true); }
   else toast(r.error || "apply failed", "err");
+}
+async function bindPreset(model, name) {
+  // toggle: clicking the dot of an already-bound preset unbinds it
+  const cur = (cfgOf().preset_bindings || {})[model] || "";
+  const next = (cur === name) ? "" : name;
+  const r = await api("/api/presets/bind", {model, name: next});
+  if (r.ok) {
+    toast(next ? `Bound "${name}" as default` : `Unbound "${name}"`, "ok");
+    delete diagCache[model]; invalidateKnobs(); await refresh(true);
+  } else toast(r.error || "bind failed", "err");
 }
 async function savePresetFrom(model) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
@@ -661,6 +677,8 @@ export function initModels() {
     const pApply = e.target.closest("[data-preset-apply]");
     if (pApply) {
       e.stopPropagation();
+      const pbind = e.target.closest("[data-preset-bind]");
+      if (pbind) { await bindPreset(pbind.dataset.presetBindModel, pbind.dataset.presetBind); return; }
       const pdel = e.target.closest("[data-preset-del]");
       if (pdel) { await api("/api/presets/delete", {name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
       await applyPreset(pApply.dataset.presetModel, pApply.dataset.presetApply); return;
