@@ -978,11 +978,21 @@ def post_scan(req):
 
 def post_scan_apply(req):
     entries = req.body.get("entries", [])
+    existing = config.read_sections()
     for e in entries:
         keys = {"model": e["model"]}
         # Always pass mmproj/embeddings so stale values are cleared on re-scan.
         keys["mmproj"] = e.get("mmproj") or None
         keys["embeddings"] = "true" if e.get("embeddings") else None
+        # MTP wiring is ADDITIVE, unlike mmproj: spec-type is also how the user
+        # selects ngram-* speculation, so clearing it on re-scan would wipe a
+        # hand-set mode. Only fill these when the section doesn't already carry
+        # its own value.
+        sect = existing.get(e["id"], {})
+        if e.get("draft_model") and not sect.get("spec-draft-model"):
+            keys["spec-draft-model"] = e["draft_model"]
+        if e.get("draft_mtp") and not sect.get("spec-type"):
+            keys["spec-type"] = "draft-mtp"
         config.set_keys(e["id"], keys)
     config.apply_ctx_defaults()
     router("/models?reload=1")
