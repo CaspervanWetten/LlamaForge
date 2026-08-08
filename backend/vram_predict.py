@@ -120,6 +120,32 @@ def _normalize(pred, confidence, source):
     }
 
 
+def fit_label(predict):
+    """Rate a model fits/tight/offload from a physics prediction, or "unknown".
+
+    Replaces hub._fit()'s size-only guess where a real prediction exists, so the
+    Discover fit badge stops contradicting the tok/s estimate beside it. The
+    reported failure was a large MoE (hybrid regime, experts on CPU) that runs
+    fine but got labelled "offload" purely for being bigger than VRAM. Here a
+    hybrid placement that is still interactive/usable reads as "tight", not
+    "offload"; only genuinely slow generation, or full disk streaming, is
+    "offload". Callers fall back to hub._fit() on "unknown".
+    """
+    if not predict or predict.get("confidence") == "unknown":
+        return "unknown"
+    regime = predict.get("regime")
+    use = predict.get("usability")
+    if regime is None or use is None:
+        return "unknown"
+    if use in ("slow", "impractical"):
+        return "offload"                 # too slow to matter, wherever it sits
+    if regime == "gpu-resident":
+        return "fits"
+    if regime == "hybrid":
+        return "tight"                   # partial offload but still usable (MoE sweet spot)
+    return "offload"                     # streaming from disk
+
+
 def _unknown(note):
     return {"regime": None, "tok_s": None, "usability": None,
             "gpu_resident_frac": 0.0,

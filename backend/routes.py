@@ -1041,6 +1041,11 @@ def post_hub_files(req):
                 f["predict"] = vram_predict.predict_remote(
                     repo=repo, gguf_file=f.get("path"), size_bytes=f.get("size"),
                     cfg=c, hw=hw)
+                # Prefer the offload-aware label over hub._fit()'s size-only
+                # guess; keep the naive value only when physics can't decide.
+                label = vram_predict.fit_label(f["predict"])
+                if label != "unknown":
+                    f["fit"] = label
         return 200, listing
     except Exception as e:
         return 200, {"error": str(e), "files": [], "mmproj": []}
