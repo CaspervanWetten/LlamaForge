@@ -324,6 +324,11 @@ def main():
     if config.LOAD_ERROR:
         print(f"  WARNING: {config.LOAD_ERROR}")
         print(f"  previous contents saved to {config.CONFIG}.corrupt")
+    try:                    # the repo ships no models.ini; llama-server needs one
+        if config.ensure_models_ini():
+            print(f"  created {config.ini_path()}")
+    except OSError as e:    # unwritable path: say so, the router will fail next
+        print(f"  WARNING: could not create models.ini ({e})")
     try:                    # backfill ctx-size defaults, then nudge the router
         if config.apply_ctx_defaults().get("changed"):
             routes.router("/models?reload=1")

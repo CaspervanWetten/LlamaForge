@@ -47,6 +47,7 @@ DEFAULTS = {
     "active_engine": "llamacpp",              # which binary the router uses: llamacpp | ikllama
     "auto_load_model": "",                    # model id to load automatically on launch ("" = none)
     "presets":     {},                       # named knob sets: {name: {knob: value}}
+    "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit
     "ui_mode":     "lite",                    # "lite" (curated knobs) or "advanced" (all ~220)
     "onboarded":   False,                     # first-run wizard shown once, then True
     "anthropic_default_model": "",           # fallback local model id for the Anthropic shim
@@ -159,8 +160,33 @@ def migrate():
 # apply_ctx_defaults holds this one across many set_keys calls.
 _INI_LOCK = threading.RLock()
 
+# A Windows drive-letter (C:\ or C:/) or UNC (\\host) path. os.path.isabs() only
+# recognizes these when running ON Windows; a config.json written on a Windows
+# box is still absolute when its paths are read anywhere else (e.g. CI), so match
+# them directly rather than trust the host's path flavour.
+_WIN_ABS = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^//")
+
+def _abs(p):
+    """Anchor a configured path to the repo root, unless it is already absolute.
+
+    The router is spawned detached and is handed this path as an argument, so it
+    resolves any relative value against *its* CWD - whatever directory the user
+    launched the panel from. config.example.json ships "./models.ini", so
+    starting from anywhere but the repo root pointed llama-server at a different,
+    usually nonexistent registry: it came up with 0 models and the dashboard
+    looked like it had lost every model on restart.
+
+    "Absolute" spans both path flavours on purpose: re-rooting a Windows user's
+    "D:/models.ini" because the host happens to be POSIX would corrupt it.
+    """
+    if not p:
+        return p
+    if os.path.isabs(p) or _WIN_ABS.match(p):
+        return p
+    return os.path.normpath(os.path.join(ROOT, p))
+
 def ini_path():
-    """The models.ini the active engine reads.
+    """The models.ini the active engine reads, always as an absolute path.
 
     ik_llama gets its own registry because the two binaries accept different
     knobs; when the user has not named one, derive a sibling of the llama.cpp
@@ -170,10 +196,10 @@ def ini_path():
     if c.get("active_engine") == "ikllama":
         p = c.get("ik_llama_models_ini")
         if p:
-            return p
-        stem, ext = os.path.splitext(c["models_ini"])
+            return _abs(p)
+        stem, ext = os.path.splitext(_abs(c["models_ini"]))
         return stem + "-ikllama" + (ext or ".ini")
-    return c["models_ini"]
+    return _abs(c["models_ini"])
 
 def read_sections(path=None):
     """Return {section: {key: value}} for all sections including [*]."""
@@ -324,16 +350,72 @@ def save_preset(name, settings):
         return presets
 
 def delete_preset(name):
-    """Remove a named preset. Returns True if it existed."""
+    """Remove a named preset and any model bindings that pointed at it. Returns
+    True if the preset existed."""
     with _LOCK:
         cfg = load()
         presets = cfg.get("presets")
-        if isinstance(presets, dict) and name in presets:
-            del presets[name]
-            cfg["presets"] = presets
+        if not (isinstance(presets, dict) and name in presets):
+            return False
+        del presets[name]
+        cfg["presets"] = presets
+        binds = cfg.get("preset_bindings")
+        if isinstance(binds, dict):
+            cfg["preset_bindings"] = {m: n for m, n in binds.items() if n != name}
+        save(cfg)
+        return True
+
+# ---------------- preset bindings ----------------
+# A binding names the preset a model defaults to. The knobs themselves are
+# materialized into models.ini by the caller (routes) at bind/edit time - config
+# only owns the mapping, because reloading the router is not config's job.
+
+def get_bindings():
+    b = load().get("preset_bindings")
+    return b if isinstance(b, dict) else {}
+
+def bind_preset(model_id, name):
+    """Bind model_id to preset `name` (or unbind when name is ""). Raises if the
+    preset does not exist. Returns the full bindings map."""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        raise ValueError("model id is required")
+    name = (name or "").strip()
+    with _LOCK:
+        cfg = load()
+        binds = cfg.get("preset_bindings")
+        if not isinstance(binds, dict):
+            binds = {}
+        if name == "":
+            binds.pop(model_id, None)
+        else:
+            if name not in (cfg.get("presets") or {}):
+                raise ValueError(f"unknown preset: {name}")
+            binds[model_id] = name
+        cfg["preset_bindings"] = binds
+        save(cfg)
+        return binds
+
+def unbind_preset(model_id):
+    """Remove a model's binding. Returns True if it had one."""
+    with _LOCK:
+        cfg = load()
+        binds = cfg.get("preset_bindings")
+        if isinstance(binds, dict) and model_id in binds:
+            del binds[model_id]
+            cfg["preset_bindings"] = binds
             save(cfg)
             return True
         return False
+
+def prune_binding(model_id):
+    """Drop a deleted model's binding. Alias of unbind_preset for call-site
+    clarity."""
+    return unbind_preset(model_id)
+
+def bindings_for_preset(name):
+    """Model ids bound to preset `name`."""
+    return [m for m, n in get_bindings().items() if n == name]
 
 # ---------------- automatic ctx-size defaults ----------------
 
@@ -399,13 +481,27 @@ def apply_ctx_defaults(path=None):
                 changed.append(sec)
         return {"changed": changed}
 
-def ensure_global(defaults, path=None):
-    """Make sure a [*] global section exists with sane defaults (first run)."""
+def ensure_models_ini(path=None, defaults=None):
+    """Create models.ini with a [*] global section if it isn't there yet.
+
+    llama-server refuses to start without this file, and on a fresh checkout
+    nothing created it: the repo ships no models.ini (it's per-machine), so the
+    very first launch failed with a bind-less router and an empty dashboard.
+    Runs on every startup and is idempotent - an existing file, even one with no
+    [*] section, is left exactly as the user wrote it.
+
+    Returns True if the file was created.
+    """
     path = path or ini_path()
     with _INI_LOCK:
-        secs = read_sections(path)
-        if "*" not in secs:
-            if not os.path.exists(path):
-                with open(path, "w", encoding="utf-8", newline="") as f:
-                    f.write("version = 1\n")
-            _set_keys_locked("*", defaults, path)
+        if os.path.exists(path):
+            return False
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("; LlamaForge model registry - read by llama-server's router.\n"
+                    "; Sections are model ids; keys are llama-server flags.\n"
+                    "version = 1\n")
+        _set_keys_locked("*", defaults or {"ctx-size": CTX_GLOBAL_DEFAULT}, path)
+        return True

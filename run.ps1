@@ -3,7 +3,23 @@
 # then opens the dashboard in your browser. Safe to run repeatedly.
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$cfg  = Get-Content (Join-Path $here "config.json") -Raw | ConvertFrom-Json
+
+# config.json is per-machine and deliberately not in the repo. Without this the
+# first run died on a raw "Get-Content: path does not exist" exception that said
+# nothing about config.example.json sitting right next to it.
+$cfgPath = Join-Path $here "config.json"
+if (-not (Test-Path $cfgPath)) {
+  $example = Join-Path $here "config.example.json"
+  if (-not (Test-Path $example)) {
+    Write-Host "config.json is missing and config.example.json was not found in $here." -ForegroundColor Red
+    Write-Host "Re-clone the repo, or create config.json by hand." -ForegroundColor Red
+    exit 1
+  }
+  Copy-Item $example $cfgPath
+  Write-Host "config.json not found - created one from config.example.json." -ForegroundColor Yellow
+  Write-Host "Set your llama.cpp paths and model folders in the dashboard's Setup tab." -ForegroundColor Yellow
+}
+$cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
 
 function Listening($port){ [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) }
 
@@ -30,6 +46,25 @@ if (-not (Listening $cfg.router_port)) {
     $engineLabel = "llama.cpp"
     $modelsIni = $cfg.models_ini
   }
+  # Mirror config._abs(): the router is started without -WorkingDirectory, and
+  # config.example.json ships "./models.ini", so a relative value resolved
+  # against whatever directory the user ran this from - the router then read an
+  # empty registry and loaded 0 models.
+  if ($modelsIni -and -not [IO.Path]::IsPathRooted($modelsIni)) {
+    $modelsIni = [IO.Path]::GetFullPath((Join-Path $here $modelsIni))
+  }
+  # Mirror config.ensure_models_ini(): llama-server refuses to start without
+  # this file, and the router is launched here, before the backend can make one.
+  if ($modelsIni -and -not (Test-Path $modelsIni)) {
+    Set-Content -Path $modelsIni -Encoding utf8 -Value @(
+      "; LlamaForge model registry - read by llama-server's router.",
+      "; Sections are model ids; keys are llama-server flags.",
+      "version = 1",
+      "",
+      "[*]",
+      "ctx-size = 150000")
+    Write-Host "created $modelsIni"
+  }
   if (Test-Path $serverBin) {
     $routerHost = if ($cfg.router_host) { $cfg.router_host } else { "127.0.0.1" }
     $args = @("--models-preset", $modelsIni, "--models-max", "1", "--offline",
@@ -41,6 +76,17 @@ if (-not (Listening $cfg.router_port)) {
     Write-Host "started $engineLabel router on $($routerHost):$($cfg.router_port)"
   } else {
     Write-Host "server_bin not found ($serverBin) - open the dashboard Build tab to build $engineLabel first." -ForegroundColor Yellow
+  }
+} else {
+  # Something already holds the router port. If it isn't a llama-server, the
+  # dashboard would come up with every model "offline" and no stated reason -
+  # port 8080 collides with XAMPP/Apache and plenty of other dev servers.
+  $ownerPid = Get-NetTCPConnection -LocalPort $cfg.router_port -State Listen -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty OwningProcess
+  $ownerName = if ($ownerPid) { (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue).ProcessName }
+  if ($ownerName -and $ownerName -notmatch "llama") {
+    Write-Host "port $($cfg.router_port) is already in use by '$ownerName' (PID $ownerPid)." -ForegroundColor Yellow
+    Write-Host "The router was not started. Stop that process, or change router_port in the Setup tab." -ForegroundColor Yellow
   }
 }
 

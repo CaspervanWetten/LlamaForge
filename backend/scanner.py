@@ -80,9 +80,12 @@ def _shard(p):
 def build_entries(paths):
     """Return list of {id, model, mmproj?, embeddings?, gib, existing_id?}."""
     mmproj_by_dir = {}
+    mtp_by_dir = {}
     for p in paths:
         if _is_mmproj(p):
             mmproj_by_dir[os.path.dirname(p)] = p
+        elif _is_mtp(p):
+            mtp_by_dir[os.path.dirname(p)] = p
 
     mains = []
     seen_shard_sets = set()
@@ -121,6 +124,15 @@ def build_entries(paths):
             arch = (metadata(p) or {}).get("architecture", "")
             if arch in _VISION_ARCHES:
                 e["mmproj"] = mm.replace("\\", "/")
+        # Attach an mtp-* sibling as a speculative draft model. Attaching alone
+        # is inert; only enable spec-type=draft-mtp when the sidecar actually
+        # declares NextN layers, the signal llama.cpp itself gates on.
+        mt = mtp_by_dir.get(os.path.dirname(p))
+        if mt:
+            from gguf import has_nextn
+            e["draft_model"] = mt.replace("\\", "/")
+            if has_nextn(mt):
+                e["draft_mtp"] = True
         if _is_embed(p):
             e["embeddings"] = True
         entries.append(e)

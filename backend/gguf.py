@@ -91,6 +91,35 @@ def context_length(path):
         return None
 
 
+def has_nextn(path):
+    """True if this GGUF declares MTP/NextN layers (`*.nextn_predict_layers` > 0).
+
+    llama.cpp gates draft-mtp speculative decoding on NextN layers being present
+    in the model, not on the arch name, so this file-intrinsic signal is what
+    decides whether an mtp-* sidecar can actually be enabled. The curated
+    metadata() drops this key, hence a dedicated raw-KV walk. Never raises.
+    """
+    try:
+        with open(path, "rb") as f:
+            if _rd(f, 4) != b"GGUF":
+                return False
+            if _u32(f) < 2:
+                return False
+            _u64(f)                       # tensor count (unused)
+            n_kv = _u64(f)
+            if n_kv > 1_000_000:
+                return False
+            for _ in range(n_kv):
+                key = _read_str(f)
+                vt  = _u32(f)
+                if key.endswith(".nextn_predict_layers") and vt in _INT_TYPES:
+                    return int(_read_scalar(f, vt)) > 0
+                _skip_value(f, vt)
+            return False
+    except Exception:
+        return False
+
+
 # general.file_type is an LLAMA_FTYPE enum; map the common quant tiers to labels.
 _FTYPE = {
     0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1",

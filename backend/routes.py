@@ -33,8 +33,12 @@ VLLM_SUPPORTED = osplat.IS_WIN
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB     = os.path.join(ROOT, "web")
 LOGDIR  = os.path.join(ROOT, "logs")
-BUILDER_LLAMA   = BuildManager(LOGDIR, "build")
-BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama")
+# Each engine records the binary its own build produced (see _record_server_bin).
+# Resolved at call time, so the helper can live further down with its siblings.
+BUILDER_LLAMA   = BuildManager(LOGDIR, "build",
+                               on_built=lambda p: _record_server_bin("server_bin", p))
+BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama",
+                               on_built=lambda p: _record_server_bin("ik_llama_server_bin", p))
 
 def _builder_for(target):
     return BUILDER_IKLLAMA if target == "ikllama" else BUILDER_LLAMA
@@ -850,6 +854,8 @@ def post_model_delete(req):
         ok, err = backend.delete(mid)
     except backends.Unsupported as e:
         raise ApiError(400, str(e))
+    if ok:
+        config.prune_binding(mid)          # a gone model keeps no binding
     return (200 if ok else 500), {"ok": ok, "error": err, "backend": backend.name}
 
 
@@ -891,16 +897,37 @@ def post_autotune_refine(req):
 
 
 def post_presets_save(req):
+    name = req.body.get("name", "")
     try:
-        presets = config.save_preset(req.body.get("name", ""),
-                                     req.body.get("settings", {}))
+        presets = config.save_preset(name, req.body.get("settings", {}))
     except ValueError as e:
         raise ApiError(400, str(e))
+    # Re-sync every model bound to this preset: editing "coding" once updates
+    # all models using it - the point of binding (issue #2).
+    clean = _clean_settings(presets.get(name, {}))
+    for mid in config.bindings_for_preset(name):
+        _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "presets": presets}
 
 
 def post_presets_delete(req):
     return 200, {"ok": config.delete_preset(req.body.get("name", ""))}
+
+
+def post_presets_bind(req):
+    """Bind a preset as a model's default (name="" unbinds). Binding
+    materializes the preset's knobs into the model's section now; unbinding
+    leaves them in place - they're the user's once written."""
+    mid = req.body.get("model", "")
+    name = req.body.get("name", "")
+    try:
+        binds = config.bind_preset(mid, name)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    if name:
+        preset = config.get_presets().get(name, {})
+        _apply_knobs_and_reload(mid, _clean_settings(preset))
+    return 200, {"ok": True, "bindings": binds}
 
 
 def post_presets_apply(req):
@@ -929,6 +956,12 @@ def post_build_start(req):
         bdir = c["build_dir"]
         flags = req.body.get("flags") or c.get("cmake_flags") or hardware.recommend()["cmake_flags"]
         config.update({"cmake_flags": flags})
+    # Answer an unset/bad path here rather than starting a build thread that can
+    # only fail: the user gets the reason in the UI instead of a raw cmake error
+    # in the build log ("No build directory specified for -B").
+    bad = BuildManager.validate_paths(src, bdir)
+    if bad:
+        return 200, {"started": False, "target": target, "error": bad}
     ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True))
     return 200, {"started": ok, "target": target}
 
@@ -945,11 +978,21 @@ def post_scan(req):
 
 def post_scan_apply(req):
     entries = req.body.get("entries", [])
+    existing = config.read_sections()
     for e in entries:
         keys = {"model": e["model"]}
         # Always pass mmproj/embeddings so stale values are cleared on re-scan.
         keys["mmproj"] = e.get("mmproj") or None
         keys["embeddings"] = "true" if e.get("embeddings") else None
+        # MTP wiring is ADDITIVE, unlike mmproj: spec-type is also how the user
+        # selects ngram-* speculation, so clearing it on re-scan would wipe a
+        # hand-set mode. Only fill these when the section doesn't already carry
+        # its own value.
+        sect = existing.get(e["id"], {})
+        if e.get("draft_model") and not sect.get("spec-draft-model"):
+            keys["spec-draft-model"] = e["draft_model"]
+        if e.get("draft_mtp") and not sect.get("spec-type"):
+            keys["spec-type"] = "draft-mtp"
         config.set_keys(e["id"], keys)
     config.apply_ctx_defaults()
     router("/models?reload=1")
@@ -998,6 +1041,11 @@ def post_hub_files(req):
                 f["predict"] = vram_predict.predict_remote(
                     repo=repo, gguf_file=f.get("path"), size_bytes=f.get("size"),
                     cfg=c, hw=hw)
+                # Prefer the offload-aware label over hub._fit()'s size-only
+                # guess; keep the naive value only when physics can't decide.
+                label = vram_predict.fit_label(f["predict"])
+                if label != "unknown":
+                    f["fit"] = label
         return 200, listing
     except Exception as e:
         return 200, {"error": str(e), "files": [], "mmproj": []}
@@ -1152,6 +1200,23 @@ def _active_server_bin(c=None):
     if c.get("active_engine") == "ikllama":
         return c.get("ik_llama_server_bin", "")
     return c.get("server_bin", "")
+
+
+def _record_server_bin(key, path):
+    """Point `key` at the binary a finished build produced. Returns True if
+    config.json changed.
+
+    Only fills a gap or repairs a path that isn't there: bootstrap's pre-build
+    guess (`bin/llama-server`) never exists on MSVC, so it gets corrected, while
+    a path the user set deliberately - and that resolves - is left alone. This
+    runs on a build thread, so it goes through config.update()'s lock rather
+    than load/mutate/save.
+    """
+    current = (cfg().get(key) or "").strip()
+    if current and os.path.exists(current):
+        return False
+    config.update({key: path})
+    return True
 
 
 def post_network(req):
@@ -1384,6 +1449,7 @@ POST_ROUTES = {
     "/api/autotune/recommend":  post_autotune_recommend,
     "/api/autotune/refine":     post_autotune_refine,
     "/api/presets/save":        post_presets_save,
+    "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,
     "/api/presets/apply":       post_presets_apply,
     "/api/build/start":         post_build_start,
