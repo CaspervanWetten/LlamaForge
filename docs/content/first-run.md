@@ -8,6 +8,16 @@ order: 3
 
 The first time LlamaForge starts with a fresh `config.json` (no `ui_mode` key on disk), `config.py`'s `migrate()` classifies the install: if `server_bin` is already set (an existing llama.cpp build was found), the config is marked `ui_mode: "advanced"` and `onboarded: true`; otherwise it is marked `ui_mode: "lite"` and `onboarded: false`, which is what causes the onboarding wizard to appear. This check is idempotent — a config that already carries `ui_mode` is left untouched on every later startup.
 
+## Fresh-install safety net
+
+Several things that used to derail a first run are now handled automatically, in both `run.ps1` / `run.sh` and the backend:
+
+- **No `config.json`** — the launchers copy `config.example.json` to `config.json` and tell you to set your paths in Setup, instead of crashing on a missing file.
+- **No `models.ini`** — `config.ensure_models_ini()` creates a minimal one with a `[*]` section (the router refuses to start without it). A relative `models_ini` is anchored to the repo root so the detached router can't read an empty registry from the wrong directory.
+- **Router port already in use** — if something else holds `router_port` (port `8080` collides with XAMPP/Apache and other dev servers), the launcher names the process holding it and skips starting the router, rather than leaving the dashboard showing every model "offline" with no explanation. The backend's `router_ctl.start()` refuses a bound port the same way.
+- **A just-installed build tool still shows MISSING** — the Setup **Install** flow re-reads `PATH` from the registry (`osplat.refresh_path()`) so a freshly installed `ninja`/`cmake` is detected without restarting; only if that genuinely isn't enough does it ask for a restart.
+- **`server_bin` after a build** — a finished build records where `llama-server` actually landed (`bin/Release` under MSVC, `bin` elsewhere), correcting the pre-build guess so you don't have to hand-edit `config.json`.
+
 ## Lite vs Advanced mode
 
 LlamaForge has two UI densities, toggled at any time from the mode switch in the dashboard header (`applyMode()` in `web/js/ui.js` toggles a `mode-lite` class on `<body>` and persists the choice via `PUT /api/config` with `ui_mode`):

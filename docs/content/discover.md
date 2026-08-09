@@ -12,12 +12,12 @@ Search huggingface.co for GGUF (and safetensors, for vLLM) models directly from 
 
 The Discover tab queries the Hugging Face Hub API (`backend/hub.py` `search()`), filtered to repos tagged `gguf`, sorted by downloads, last-modified, or likes. Selecting a repo lists its individual GGUF files (`hub.py` `files()`), which collapses multi-shard files (`*-00001-of-0000N.gguf`) into a single entry with their combined size, and separates out `mmproj` (multimodal projector) files for vision models.
 
-Each file is rated against your machine's total VRAM (all GPUs summed, read from `hardware.detect_gpus()`). The rating comes from `hub.py`'s `_fit()`:
+Each file is rated against your hardware. When a prediction is available (the default), the badge is **offload-aware**: `vram_predict.fit_label()` derives it from the same physics estimate that powers the Will-it-run panel, which accounts for MoE active-vs-total parameters and partial GPU offload. So a large MoE that runs fast with its experts on CPU reads as **TIGHT**, not **CPU OFFLOAD**, even though it's bigger than your VRAM. When no prediction can be made, the badge falls back to `hub.py`'s size-only `_fit()`:
 
-- **FITS VRAM** — file size × 1.15 is less than or equal to total VRAM. The 15% margin accounts for KV cache and compute buffer headroom on top of the raw weights.
-- **TIGHT** — file size fits within total VRAM on its own, but doesn't clear the 1.15× headroom margin. It will load, but there's little room left for context or concurrent requests.
-- **CPU OFFLOAD** — file size exceeds total VRAM outright. The model will still load, but part of it runs on system RAM (slower).
-- **?** (unknown) — no VRAM was detected (`vram_mib` is zero or missing), so no rating can be made.
+- **FITS VRAM** — a fast, GPU-resident placement (or, in fallback, file size × 1.15 ≤ total VRAM — the 15% margin covers KV cache and compute headroom).
+- **TIGHT** — usable, but with the model partly offloaded to CPU/RAM, or (in fallback) fitting VRAM without clearing the 1.15× margin.
+- **CPU OFFLOAD** — generation would be slow, or the weights stream from disk. The model still loads; nothing is ever blocked.
+- **?** (unknown) — no VRAM detected and no prediction, so no rating can be made.
 
 Expanding a repo also shows a **Will-it-run** panel that predicts whether a selected quant will fit your GPU and at what approximate speed. It factors in MoE active-vs-total parameters, your GPU's memory bandwidth (with manual overrides in Setup), and the quant's size — then rates it as **FITS**, **TIGHT**, or **CPU OFFLOAD** with an estimated tok/s. The same estimate appears as a badge when you expand a model in the file list.
 
@@ -44,7 +44,7 @@ Each result also carries platform tags (Windows/Linux/macOS) — GGUF runs on al
 |---|---|---|
 | Search | `backend/hub.py` `search()` | Queries `huggingface.co/api/models?filter=gguf`, sorted by downloads/lastModified/likes. |
 | File listing | `backend/hub.py` `files()` | Lists a repo's `.gguf` files, collapsing sharded files and separating `mmproj` files. |
-| VRAM-fit rating | `backend/hub.py` `_fit()` | `fits`: size × 1.15 ≤ total VRAM. `tight`: size ≤ total VRAM (but not fits). `offload`: size > total VRAM. `unknown`: no VRAM detected. |
+| VRAM-fit rating | `vram_predict.fit_label()`, falling back to `hub.py` `_fit()` | Offload-aware: derived from the physics prediction (gpu-resident → `fits`; usable hybrid/offload → `tight`; slow/streaming → `offload`). Falls back to the size-only heuristic (`fits`: size × 1.15 ≤ VRAM; `tight`: ≤ VRAM; `offload`: > VRAM) when no prediction is available. |
 | Will-it-run panel | `GET /api/vram/predict` | Predicts regime + tok/s for a repo+quant using MoE-aware model size, GPU bandwidth (with Setup overrides), and quant factor. |
 | Download engine | `backend/hub.py` `DownloadManager` | Background thread; one job at a time; progress polled via `/api/hub/progress`. |
 | Pause / resume | `DownloadManager.pause()` / `resume()` | Pause keeps the `.part` file; resume continues via an HTTP `Range` request from the bytes already on disk. |

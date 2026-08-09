@@ -50,6 +50,13 @@ The **Setup** tab (`backend/prereqs.py`) checks for `git`, `cmake`, `ninja`, and
 - **"llama.cpp source not found at `<path>`"** — `config.json`'s `llama_src` doesn't point at a git checkout. Answer `y` to clone it (needs Git), or point `llama_src` in `config.json` at an existing checkout and re-run.
 - **Re-run bootstrap after installing Python** — `bootstrap.ps1` exits after installing Python and asks you to open a new terminal so `PATH` picks it up, then run bootstrap again.
 
+## First run
+
+- **`config.json` / `models.ini` missing** — no longer fatal. The launchers copy `config.example.json` to `config.json` on a fresh checkout, and a `[*]`-only `models.ini` is created if absent (the router won't start without it). Set your real paths in the Setup tab afterward.
+- **Router port already in use** — port `8080` collides with XAMPP/Apache and other dev servers. `run.ps1`/`run.sh` now name the process holding `router_port` and skip starting the router instead of leaving every model showing "offline" for no visible reason; free the port or change `router_port` in Setup.
+- **All models "offline" / zero models after moving the folder** — a relative `models_ini` (the shipped default `./models.ini`) is now anchored to the repo root, so the router no longer reads an empty registry when launched from another directory. If you still see this, check `models_ini` in `config.json` points at the right file.
+- **Build shows "built, with warnings"** — `llama-server` built fine but a non-essential step (usually the npm/`sharp` UI assets on Windows) failed. The binary is usable; the failing step is in the Build Log. This is distinct from a red **BUILD FAILED**, which means no fresh `llama-server` was produced.
+
 ## Everything else
 
 - **Dashboard won't open** — `run.ps1`/`run.sh` skip starting the router or dashboard if something is already listening on `router_port` (default `8080`) or `panel_port` (default `8090`); check nothing else on your machine is bound to those ports.

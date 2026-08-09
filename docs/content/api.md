@@ -37,6 +37,7 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | POST | `/api/presets/save` | Save a named knob preset. |
 | POST | `/api/presets/delete` | Delete a named preset. |
 | POST | `/api/presets/apply` | Apply a saved preset's knobs to a model, same reload behavior as `/api/save`. |
+| POST | `/api/presets/bind` | Bind a preset as a model's default (materializes its knobs; `name: ""` unbinds). Re-saving a bound preset re-syncs every model using it. |
 | GET | `/api/model/metadata` | GGUF metadata for a model id (query param `model`). |
 | GET | `/api/model/diag` | Diagnostic read of the router log against a model's merged (`[*]` + per-model) settings (query param `model`). |
 | POST | `/api/autotune/recommend` | Recommend knob values for a model given hardware constraints. Body: `{model, intent}` where `intent` is `balanced`, `speed`, `context`, or `coding`. Returns `{knobs, reasons}`. |
@@ -53,9 +54,10 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | GET | `/api/setup` | Prerequisite tool status (git/cmake/ninja/compiler/CUDA) plus hardware recommendation. |
 | POST | `/api/setup/install` | Install a missing prerequisite tool (Windows/macOS only). |
 | GET | `/api/gpus` | Live GPU telemetry via `nvidia-smi`. |
-| GET | `/api/build/info` | Current `llama.cpp` commit, available updates, and recommended/saved CMake flags. |
-| GET | `/api/build/log` | Tail of the build log plus builder state. |
-| POST | `/api/build/start` | Start (re)building `llama.cpp` with the given (or saved/recommended) CMake flags. |
+| GET | `/api/build/info` | Current commit, available updates, and recommended/saved CMake flags (per `target`: `llamacpp` or `ikllama`). |
+| GET | `/api/build/log` | Tail of the build log plus builder state (`phase` includes `done_warnings` for a partial success). |
+| POST | `/api/build/start` | Start (re)building the target engine with the given (or saved/recommended) CMake flags. |
+| POST | `/api/engine/switch` | Point the router at `llamacpp` or `ikllama` (sets `active_engine`); refused if the target binary has no router mode. |
 
 ## VRAM prediction
 

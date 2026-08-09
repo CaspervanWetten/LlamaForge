@@ -25,8 +25,16 @@ order: 1
 | `vllm_port` | int | `8081` | Port vLLM serves on inside WSL (localhost-forwarded to Windows). |
 | `cmake_flags` | object | `{}` | Persisted CMake build flags, normally seeded from hardware detection. |
 | `git_remote` | string | `"https://github.com/ggml-org/llama.cpp"` | Remote used to clone/update the `llama.cpp` source. |
+| `active_engine` | string | `"llamacpp"` | Which llama-family binary the router uses: `"llamacpp"` or `"ikllama"`. |
+| `ik_llama_src` | string | `""` | Path to a git checkout of `ik_llama.cpp`. |
+| `ik_llama_build_dir` | string | `""` | CMake build directory for ik_llama. |
+| `ik_llama_server_bin` | string | `""` | Path to ik_llama's built `llama-server`; empty leaves the engine disabled. |
+| `ik_llama_models_ini` | string | `""` | ik_llama's own registry; empty resolves to a `-ikllama` sibling of `models_ini`. |
+| `ik_llama_git_remote` | string | `"https://github.com/ikawrakow/ik_llama.cpp"` | Remote used to clone/update ik_llama. |
+| `ik_llama_cmake_flags` | object | `{}` | Persisted CMake build flags for the ik_llama build. |
 | `auto_load_model` | string | `""` | Model id to load automatically on launch. Empty string disables auto-load. |
 | `presets` | object | `{}` | Named knob sets: `{name: {knob: value}}`, managed from the dashboard. |
+| `preset_bindings` | object | `{}` | Preset bound as each model's default: `{model_id: preset_name}`. |
 | `ui_mode` | string | `"lite"` | `"lite"` shows a curated knob set; `"advanced"` exposes all ~220 llama-server flags. |
 | `onboarded` | bool | `False` | Whether the first-run wizard has already been shown; set to `True` once dismissed. |
 | `anthropic_default_model` | string | `""` | Fallback local model id used by the Anthropic-compatible shim when a request doesn't map to one. |
@@ -36,9 +44,11 @@ order: 1
 | `wiki_active` | object | `{}` | Active profile per model: `{model_id: profile_name}`. |
 | `theme` | string | `""` | UI theme. Empty string follows OS/`localStorage`; otherwise `"light"` or `"dark"`. |
 | `cvd` | bool | `False` | Enables the colorblind-safe palette and non-color status cues. |
+| `vram_bandwidths` | object | `{}` | Optional `{vram_bw, ram_bw, disk_bw}` GB/s overrides for the VRAM-fit estimate; empty uses GPU presets/defaults. |
+| `vram_predict_enabled` | bool | `True` | Whether the offline VRAM-fit/tok-s estimate is computed (Discover, on expand). |
 | `docs_dir` | string | `""` | Directory the in-app docs viewer reads from. Empty string resolves to `<repo root>/docs/content`. |
 
-25 keys total, matching `DEFAULTS` in `backend/config.py`.
+35 keys total, matching `DEFAULTS` in `backend/config.py`.
 
 ## Loading and saving
 
