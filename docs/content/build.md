@@ -24,7 +24,11 @@ The Build tab reports two independent things: how your local `llama_src` checkou
 
 These flags are shown as pills on the Build tab and used as the default for a rebuild; if you've previously saved custom flags (`cmake_flags` in `config.json`), those are shown instead until you clear them.
 
-A rebuild (`BuildManager.run_build()`) runs in a background thread: optionally `git pull --ff-only origin` first, backs up the current binaries directory (`bin/Release` on Windows/MSVC, `bin` elsewhere) to a timestamped copy before touching anything, runs `cmake -B <build_dir> -S <llama_src> -DCMAKE_BUILD_TYPE=Release` with your flags, then `cmake --build <build_dir> --config Release --parallel <jobs>`. Output streams to a log file the dashboard polls live.
+A rebuild (`BuildManager.run_build()`) runs in a background thread: it first validates that `llama_src`/`build_dir` are set and the source exists (an unset path is reported plainly instead of running `cmake -B  -S ` and surfacing CMake's own error), optionally `git pull --ff-only origin`, backs up the current binaries directory (`bin/Release` on Windows/MSVC, `bin` elsewhere) to a timestamped copy before touching anything, runs `cmake -B <build_dir> -S <llama_src> -DCMAKE_BUILD_TYPE=Release` with your flags, then `cmake --build <build_dir> --config Release --parallel <jobs>`. Output streams to a log file the dashboard polls live. On success it records where `llama-server` actually landed into `config.json`, so a first build doesn't leave you hand-fixing `server_bin`.
+
+**"Built, with warnings."** `cmake --build` returns a single exit code for the whole build, so a failing non-essential target (the npm/`sharp` UI-asset step on Windows is the common one) used to be reported as a hard **BUILD FAILED** even though `llama-server` itself built. Now, if the build step fails but a *freshly built* `llama-server` is present (freshness proven by comparing its mtime to the build's start, so a stale binary from a previous build can't mask a real compile failure), the build is reported as **built, with warnings** — the binary is recorded and usable, and the failing step is left in the log for you to read. A build that produced no fresh binary is still a hard failure.
+
+**Two llama-family engines.** The Build tab has a **llama.cpp / ik_llama** target toggle. Building the `ik_llama` target uses its own `ik_llama_src` / `ik_llama_build_dir` / `ik_llama_cmake_flags` and produces a separate binary. A **Switch engine** control (`POST /api/engine/switch`) points the router at the chosen engine by setting `active_engine`. The switch is gated on a capability probe (`router_ctl.supports_router_mode()`): because LlamaForge drives the router as `<server_bin> --models-preset ...`, a binary whose `llama-server` predates router mode is **refused** with an explanation rather than being switched to and taking the router down. Each engine reads its own `models.ini` (ik_llama uses a `-ikllama` sibling), and the knob editor reflects whichever engine is active.
 
 ## How to use it
 
@@ -51,7 +55,9 @@ A rebuild (`BuildManager.run_build()`) runs in a background thread: optionally `
 | CPU-only flags | `hardware.recommend()` | No CUDA flags; `GGML_NATIVE=ON` still set. |
 | AVX-512 flags | `hardware.recommend()` | `GGML_AVX512`, `GGML_AVX512_VNNI`, `GGML_AVX512_VBMI`, `GGML_AVX512_BF16` — all `ON` when `avx512_hint` is true. |
 | Runtime suggestion | `hardware.recommend()["runtime"]` | `n-gpu-layers=99`, `flash-attn=on` with a GPU/Metal; `n-gpu-layers=0`, `flash-attn=off` CPU-only. |
-| Rebuild | `BuildManager.run_build()` | Optional `git pull --ff-only`, backs up prior binaries, `cmake` configure + build (Release, parallel jobs = CPU count by default). |
+| Rebuild | `BuildManager.run_build()` | Validates paths, optional `git pull --ff-only`, backs up prior binaries, `cmake` configure + build (Release, parallel jobs = CPU count by default), records the built `server_bin`. |
+| Partial success | `BuildManager.run_build()` | Build-step failure with a fresh `llama-server` present → `done_warnings` (amber "built with warnings"); no fresh binary → hard `failed`. |
+| Engine target / switch | Build tab toggle, `POST /api/engine/switch` | Builds `llama.cpp` or `ik_llama`; switching sets `active_engine`, refused if the target binary has no router mode. |
 
 ## Troubleshooting
 
