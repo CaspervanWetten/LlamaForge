@@ -160,8 +160,14 @@ def migrate():
 # apply_ctx_defaults holds this one across many set_keys calls.
 _INI_LOCK = threading.RLock()
 
+# A Windows drive-letter (C:\ or C:/) or UNC (\\host) path. os.path.isabs() only
+# recognizes these when running ON Windows; a config.json written on a Windows
+# box is still absolute when its paths are read anywhere else (e.g. CI), so match
+# them directly rather than trust the host's path flavour.
+_WIN_ABS = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^//")
+
 def _abs(p):
-    """Anchor a configured path to the repo root.
+    """Anchor a configured path to the repo root, unless it is already absolute.
 
     The router is spawned detached and is handed this path as an argument, so it
     resolves any relative value against *its* CWD - whatever directory the user
@@ -169,10 +175,15 @@ def _abs(p):
     starting from anywhere but the repo root pointed llama-server at a different,
     usually nonexistent registry: it came up with 0 models and the dashboard
     looked like it had lost every model on restart.
+
+    "Absolute" spans both path flavours on purpose: re-rooting a Windows user's
+    "D:/models.ini" because the host happens to be POSIX would corrupt it.
     """
     if not p:
         return p
-    return p if os.path.isabs(p) else os.path.normpath(os.path.join(ROOT, p))
+    if os.path.isabs(p) or _WIN_ABS.match(p):
+        return p
+    return os.path.normpath(os.path.join(ROOT, p))
 
 def ini_path():
     """The models.ini the active engine reads, always as an absolute path.
