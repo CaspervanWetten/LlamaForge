@@ -217,6 +217,9 @@ button:disabled{opacity:.4;cursor:not-allowed}
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 .skel{color:var(--dim);text-align:center;padding:40px;letter-spacing:.2em;font-size:12px}
 .note{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.6}
+.spinner{display:inline-block;width:24px;height:24px;border:2px solid var(--amber-dim);border-top-color:var(--amber);border-radius:50%;animation:spin 1s linear infinite;margin-right:12px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.build-log.load-log{background:var(--code-bg);border:1px solid var(--hair);padding:12px;font-size:11px;line-height:1.5;color:var(--code-ink);white-space:pre-wrap;max-height:120px;overflow:auto;margin-top:12px;text-align:center}
 .credit{color:var(--faint-2);font-size:10px;text-align:center;margin-top:40px;letter-spacing:.06em}
 .credit a{color:var(--dim)}
 /* quick-load button in the row header (#3) */
