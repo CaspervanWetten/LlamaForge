@@ -69,7 +69,7 @@ body{background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gr
 body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;background:repeating-linear-gradient(0deg,var(--scan) 0,var(--scan) 1px,transparent 1px,transparent 3px);mix-blend-mode:multiply;opacity:.5}
 .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 90px}
 .logo{width:34px;height:34px;border:1px solid var(--amber);position:relative;flex:none;cursor:pointer}
-.logo:hover{border-color:var(--amber-dim);box-shadow:0 0 6px var(--amber-dim)}
+.logo:hover{border-color:var(--amber);box-shadow:0 0 6px var(--amber)}
 .logo::before{content:"←";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-family:var(--disp);font-size:16px;color:var(--amber);transition:transform .14s ease}
 :root[data-nav="rail"] .logo::before{content:"→";transform:translate(-50%,-50%)}
 .sub{color:var(--dim);font-size:11px;letter-spacing:.26em;text-transform:uppercase;margin-top:3px}
